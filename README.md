@@ -44,15 +44,79 @@ function useCache(keys) {
 }
 ```
 
-**When to use**: 
+**When to use**:
 - Shared data accessed by multiple components
 - No prop drilling or Context needed
 - Want to avoid cascade re-renders
 - Pure React constraint (no external state management)
 
+### 3. Pagination Caching (Map vs Array)
+**Problem**: Caching paginated API data for navigation without refetching
+**Two approaches**: Map indexed by page number vs flat array with range getter
+
+#### Approach A: Map with Page Keys
+```javascript
+const [pages, setPages] = useState(new Map()); // Map<pageNumber, Item[]>
+const [currentPage, setCurrentPage] = useState(1);
+const [isLoading, setIsLoading] = useState(false);
+
+useEffect(() => {
+  if (pages.has(currentPage)) return; // Cache hit
+
+  setIsLoading(true);
+  fetchPage(currentPage).then(data => {
+    setPages(prev => new Map(prev).set(currentPage, data));
+    setIsLoading(false);
+  });
+}, [currentPage]);
+
+// Render current page
+const currentItems = pages.get(currentPage) || [];
+```
+
+#### Approach B: Flat Array with Range Getter
+```javascript
+const [items, setItems] = useState([]); // Sparse array, undefined = not loaded
+const [totalCount, setTotalCount] = useState(0);
+
+const PAGE_SIZE = 20;
+
+const fetchRange = (start, end) => {
+  const needsFetch = items.slice(start, end).some(item => item === undefined);
+  if (!needsFetch) return;
+
+  const startPage = Math.floor(start / PAGE_SIZE);
+  fetchPage(startPage).then(data => {
+    setItems(prev => {
+      const next = [...prev];
+      data.forEach((item, i) => next[start + i] = item);
+      return next;
+    });
+  });
+};
+
+// Getter for visible range
+const getRange = (start, end) => items.slice(start, end);
+```
+
+**When to use Map**:
+- Discrete pagination UI (page 1, 2, 3 buttons)
+- Clear cache hit/miss semantics
+- Page boundaries matter to the UX
+
+**When to use Array**:
+- Infinite scroll
+- Virtualized lists (react-window, react-virtual)
+- Need to treat data as one continuous list
+
+**Array gotchas**:
+- Sparse arrays in JS are weird (holes vs undefined)
+- May need to pre-size based on total count
+- More complex logic to determine what ranges to fetch
+
 ## Tree/Hierarchy Patterns
 
-### 3. Flat List → Tree Structure (Map-Based)
+### 4. Flat List → Tree Structure (Map-Based)
 **Problem**: Convert flat list with parent references to nested tree
 **Solution**: Two-pass with object lookup
 
@@ -148,7 +212,7 @@ function TreeNode({ node }) {
 
 ## Testing Patterns
 
-### 4. Integration Testing (Component + Data Flow)
+### 5. Integration Testing (Component + Data Flow)
 **Problem**: Testing multiple components working together with async operations
 **Solution**: React Testing Library + MSW + real component tree
 
@@ -305,6 +369,8 @@ For architecture questions:
 |---------|-------------|------------|
 | Derived State | Any time state can be computed from other state | O(1) per compute |
 | Module-Level Cache | Shared data, no Context, avoid re-renders | O(1) lookups |
+| Pagination (Map) | Discrete page navigation, clear cache semantics | O(1) lookups |
+| Pagination (Array) | Infinite scroll, virtualized lists | O(1) lookups |
 | Map-Based Tree | Flat list → tree structure | O(n) |
 | Integration Testing | Testing component interactions + async | N/A |
 
