@@ -299,6 +299,227 @@ export const DoorSelection = {
 - Switching between items updates UI correctly
 - Aggregated data displays correctly
 
+## Performance Patterns
+
+### 6. Memoization (useMemo, useCallback, React.memo)
+**Problem**: Preventing unnecessary recalculations and re-renders
+
+#### useMemo - Memoize computed values
+```javascript
+// ✅ GOOD - Expensive computation
+const sortedItems = useMemo(
+  () => items.slice().sort((a, b) => a.name.localeCompare(b.name)),
+  [items]
+);
+
+// ❌ BAD - Cheap computation, memo overhead not worth it
+const fullName = useMemo(
+  () => `${firstName} ${lastName}`,
+  [firstName, lastName]
+);
+// Just do: const fullName = `${firstName} ${lastName}`;
+```
+
+#### useCallback - Memoize functions (for referential equality)
+```javascript
+// ✅ GOOD - Passed to memoized child or in dependency array
+const handleClick = useCallback((id) => {
+  setSelectedId(id);
+}, []);
+
+// ❌ BAD - No memoized consumers, wasted overhead
+const handleClick = useCallback(() => {
+  console.log('clicked');
+}, []);
+```
+
+#### React.memo - Memoize components
+```javascript
+// Only re-renders if props change (shallow compare)
+const ExpensiveList = React.memo(function ExpensiveList({ items, onSelect }) {
+  return (
+    <ul>
+      {items.map(item => (
+        <li key={item.id} onClick={() => onSelect(item.id)}>
+          {item.name}
+        </li>
+      ))}
+    </ul>
+  );
+});
+
+// Parent must stabilize props for memo to help
+function Parent() {
+  const [items] = useState(initialItems);
+  const handleSelect = useCallback((id) => { /* ... */ }, []);
+
+  return <ExpensiveList items={items} onSelect={handleSelect} />;
+}
+```
+
+**Memoization gotchas**:
+
+```javascript
+// ❌ GOTCHA: Object/array literals break memoization
+<MemoizedChild style={{ color: 'red' }} />  // New object every render
+<MemoizedChild items={items.filter(x => x.active)} />  // New array every render
+
+// ✅ FIX: Memoize or lift to stable reference
+const style = useMemo(() => ({ color: 'red' }), []);
+const activeItems = useMemo(() => items.filter(x => x.active), [items]);
+
+// ❌ GOTCHA: Missing dependencies
+const handleSubmit = useCallback(() => {
+  submitForm(formData);  // formData not in deps - stale closure!
+}, []);
+
+// ✅ FIX: Include all dependencies
+const handleSubmit = useCallback(() => {
+  submitForm(formData);
+}, [formData]);
+
+// ❌ GOTCHA: Memoizing everything "just in case"
+// Adds complexity, memory overhead, and often no benefit
+// Only memoize when you have evidence of perf issues
+```
+
+**When to memoize**:
+- Expensive calculations (sorting, filtering large lists)
+- Referential equality matters (deps arrays, memo'd children)
+- Profiler shows component re-rendering unnecessarily
+
+**When NOT to memoize**:
+- Cheap operations (string concat, simple math)
+- Component always re-renders anyway (props always change)
+- No measured performance problem
+
+### 7. Debouncing and Throttling
+**Problem**: Rate-limiting expensive operations (API calls, heavy computations)
+
+**Debounce**: Wait until user stops, then fire once
+**Throttle**: Fire at most once per interval
+
+#### Debounced Search Input
+```javascript
+function SearchInput({ onSearch }) {
+  const [value, setValue] = useState('');
+
+  // Stable debounced function
+  const debouncedSearch = useMemo(
+    () => debounce((query) => onSearch(query), 300),
+    [onSearch]
+  );
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => debouncedSearch.cancel();
+  }, [debouncedSearch]);
+
+  const handleChange = (e) => {
+    const newValue = e.target.value;
+    setValue(newValue);        // Update input immediately
+    debouncedSearch(newValue); // Debounce the search
+  };
+
+  return <input value={value} onChange={handleChange} />;
+}
+```
+
+#### useDebouncedValue Hook
+```javascript
+function useDebouncedValue(value, delay) {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedValue(value), delay);
+    return () => clearTimeout(timer);
+  }, [value, delay]);
+
+  return debouncedValue;
+}
+
+// Usage
+function Search() {
+  const [query, setQuery] = useState('');
+  const debouncedQuery = useDebouncedValue(query, 300);
+
+  useEffect(() => {
+    if (debouncedQuery) {
+      fetchResults(debouncedQuery);
+    }
+  }, [debouncedQuery]);
+
+  return <input value={query} onChange={e => setQuery(e.target.value)} />;
+}
+```
+
+#### Throttled Scroll Handler
+```javascript
+function useThrottledCallback(callback, delay) {
+  const lastRun = useRef(Date.now());
+
+  return useCallback((...args) => {
+    if (Date.now() - lastRun.current >= delay) {
+      callback(...args);
+      lastRun.current = Date.now();
+    }
+  }, [callback, delay]);
+}
+
+// Usage
+function InfiniteList() {
+  const handleScroll = useThrottledCallback((e) => {
+    const { scrollTop, scrollHeight, clientHeight } = e.target;
+    if (scrollTop + clientHeight >= scrollHeight - 100) {
+      loadMore();
+    }
+  }, 200);
+
+  return <div onScroll={handleScroll}>...</div>;
+}
+```
+
+**Debounce/Throttle gotchas**:
+
+```javascript
+// ❌ GOTCHA: Creating new debounced function every render
+const handleSearch = debounce((q) => search(q), 300); // New function each render!
+
+// ✅ FIX: Memoize the debounced function
+const handleSearch = useMemo(
+  () => debounce((q) => search(q), 300),
+  []
+);
+
+// ❌ GOTCHA: Stale closure in debounced callback
+const [count, setCount] = useState(0);
+const debouncedLog = useMemo(
+  () => debounce(() => console.log(count), 300), // count is stale!
+  []
+);
+
+// ✅ FIX: Use ref for latest value
+const countRef = useRef(count);
+countRef.current = count;
+const debouncedLog = useMemo(
+  () => debounce(() => console.log(countRef.current), 300),
+  []
+);
+
+// ❌ GOTCHA: Not canceling on unmount (memory leak, state update on unmounted)
+// ✅ FIX: Always cleanup
+useEffect(() => () => debouncedFn.cancel(), [debouncedFn]);
+```
+
+**Debounce vs Throttle**:
+| Use Case | Pattern |
+|----------|---------|
+| Search input | Debounce - wait for user to stop typing |
+| Form validation | Debounce - validate after user pauses |
+| Scroll position | Throttle - update at consistent intervals |
+| Window resize | Throttle - recalculate layout periodically |
+| Button spam prevention | Throttle - allow first click, ignore rapid repeats |
+
 ## Common Pitfalls
 
 ### Over-formatting responses
@@ -372,6 +593,10 @@ For architecture questions:
 | Pagination (Map) | Discrete page navigation, clear cache semantics | O(1) lookups |
 | Pagination (Array) | Infinite scroll, virtualized lists | O(1) lookups |
 | Map-Based Tree | Flat list → tree structure | O(n) |
+| useMemo/useCallback | Expensive calcs, referential equality for memo'd children | O(1) lookup |
+| React.memo | Prevent re-renders when props unchanged | O(n) shallow compare |
+| Debounce | Wait for pause (search, validation) | O(1) |
+| Throttle | Rate-limit continuous events (scroll, resize) | O(1) |
 | Integration Testing | Testing component interactions + async | N/A |
 
 ## Additional Resources
